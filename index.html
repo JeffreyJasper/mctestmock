@@ -15,14 +15,13 @@ input[type=text],input[type=number],select{font-size:18px;padding:10px;border:1p
 .row{margin-bottom:10px}
 .row label{display:inline-block;min-width:70px;color:#555}
 #scope{width:100%}
-#fin{width:100%;margin-bottom:12px}
+.fin{width:100%;margin-bottom:12px}
 button{font-size:18px;border:none;border-radius:10px;padding:14px 20px;background:#3498db;color:#fff;cursor:pointer;margin:6px 6px 0 0}
 button:disabled{opacity:.5}
 button.gray{background:#7f8c8d}
 button.green{background:#27ae60}
 button.orange{background:#e67e22}
 .opt{display:block;width:100%;text-align:left;background:#ecf0f1;color:#222;margin:0 0 10px;padding:16px;min-height:56px;border:2px solid transparent}
-.opt.sel{border-color:#3498db;background:#dceefb}
 .opt.correct{background:#d4edda;border-color:#28a745}
 .opt.wrong{background:#f8d7da;border-color:#dc3545}
 .words{margin-bottom:14px}
@@ -94,24 +93,29 @@ const $=id=>document.getElementById(id);
 const L=['A','B','C','D','E','F'];
 const TYPES=['mcq','fill','proof'];
 let all=[],qs=[],idx=0,score=0,wrongs=[],title='測驗';
-let selW=null,selO=null,locked=false;
+let selW=null,locked=false;
 
 function show(id){['setup','quiz','result'].forEach(x=>$(x).classList.toggle('hide',x!==id))}
 function setMsg(t,ok){$('msg').className=ok?'ok':'err';$('msg').textContent=t}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function norm(s){return String(s).normalize('NFKC').trim().toLowerCase().replace(/\s+/g,' ').replace(/[.。!!]+$/,'')}
+function norm(s,cs){
+  let t=String(s).normalize('NFKC').trim().replace(/\s+/g,' ').replace(/[.。!!]+$/,'');
+  return cs?t:t.toLowerCase();
+}
+function matches(q,v){return q.answer.some(a=>norm(a,q.caseSensitive)===norm(v,q.caseSensitive))}
 
 /* ---------- Prompt 產生 ---------- */
 const SCHEMA={
   mcq:'{"type":"mcq","subject":"科目","topic":"單元","q":"題目","options":["選項1","選項2","選項3","選項4"],"answer":0,"exp":"解釋及解題方法","errorType":"常見錯誤類型"}',
   fill:'{"type":"fill","subject":"科目","topic":"單元","q":"含空位的句子,空位用 ___ 表示","answer":["可接受答案1","可接受答案2"],"exp":"解釋及解題方法","errorType":"常見錯誤類型"}',
-  proof:'{"type":"proof","subject":"English","topic":"單元","q":"含一個錯字的完整句子","words":["逐","個","字","拆開"],"errorIndex":0,"options":["正確寫法1","寫法2","寫法3","寫法4"],"answer":0,"exp":"解釋及解題方法","errorType":"常見錯誤類型"}'
+  proof:'{"type":"proof","subject":"English","topic":"單元","q":"含一個錯字的完整句子","words":["逐","個","字","拆開"],"errorIndex":0,"answer":["正確寫法","其他可接受的正確寫法"],"exp":"解釋及解題方法","errorType":"常見錯誤類型"}'
 };
 const RULE={
   mcq:'選擇題(type 為 mcq):answer 是正確選項的位置,0=A、1=B、2=C、3=D;options 要有 4 個。',
   fill:'填充題(type 為 fill):q 內用 ___ 表示空位;answer 是陣列,列出所有可接受的正確答案(例如不同寫法)。',
-  proof:'Proofreading(type 為 proof):每題一句,句子內只有一個錯字;words 是把 q 逐個字拆開的陣列(標點跟住前面的字),用空格連起來要等於 q;errorIndex 是錯字在 words 的位置(由 0 起算);options 是該錯字的 4 個替換寫法,answer 是正確寫法的位置(0=A、1=B、2=C、3=D)。'
+  proof:'Proofreading(type 為 proof):每題一句,句子內只有一個錯字;不要提供 options;words 是把 q 逐個字拆開的陣列(標點跟住前面的字),用空格連起來要等於 q;errorIndex 是錯字在 words 的位置(由 0 起算);answer 是陣列,列出錯字改正後的正確寫法(只寫該個字,不是整句),如有多個可接受寫法才寫多個。'
 };
+const CASE_RULE='填充題和 Proofreading 的批改會區分大細楷,所以 answer 必須按該字在句中的實際位置寫正確大細楷(句首的字首字母要大楷,專有名詞、人稱代名詞 I 也要大楷)。可考大細楷錯誤,例如句子內的 i 要改成 I。如果某題不需要區分大細楷,才在該題加 "caseSensitive":false。';
 function buildPrompt(){
   const g=$('grade').value,sc=$('scope').value.trim()||'______',n=$('cnt').value||10,t=$('qtype').value;
   let kinds=t==='mix'?TYPES:[t];
@@ -121,6 +125,7 @@ function buildPrompt(){
   p+='\n規則:\n'+kinds.map(k=>'- '+RULE[k]).join('\n');
   if(t==='mix')p+='\n- 每題都必須有 type,只可用 mcq、fill、proof,三種題型數量盡量平均。';
   else p+='\n- 每題都必須有 "type":"'+t+'"。';
+  if(kinds.includes('fill')||kinds.includes('proof'))p+='\n- '+CASE_RULE;
   p+='\n- 所有題目的 exp 要寫解釋及解題方法,errorType 要寫常見錯誤類型。\n\n';
   p+='年級:'+g+' 範圍:'+sc+' 題數:'+n;
   return p;
@@ -162,22 +167,28 @@ function parseInput(raw){
     const type=o.type?String(o.type).toLowerCase():'mcq';
     if(!TYPES.includes(type))return bad.push('第'+n+'題:type 不正確(只可用 mcq、fill、proof)');
     const base={type,q:o.q,exp:String(o.exp||''),subject:o.subject||'',topic:o.topic||'',errorType:o.errorType||''};
-    if(type==='mcq'||type==='proof'){
+    if(type==='mcq'){
       if(!Array.isArray(o.options)||o.options.length<2||o.options.length>6)return bad.push('第'+n+'題:options 需要 2 至 6 個選項');
       const a=ansIdx(o.answer,o.options.length);
       if(a<0)return bad.push('第'+n+'題:answer 不正確(應為 0 起算的數字,如 0 代表 A)');
       base.options=o.options.map(String);base.answer=a;
+    }else{
+      let a=o.answer;
+      if(type==='proof'&&Array.isArray(o.options)&&o.options.length&&(typeof a==='number'||(typeof a==='string'&&/^\d+$/.test(a.trim())))){
+        const k=ansIdx(a,o.options.length);
+        if(k<0)return bad.push('第'+n+'題:answer 不正確');
+        a=[o.options[k]];
+      }
+      if(typeof a==='string'||typeof a==='number')a=[String(a)];
+      if(!Array.isArray(a)||!a.length||a.some(x=>!String(x).trim()))return bad.push('第'+n+'題:'+type+' 需要 answer(文字或陣列)');
+      base.answer=a.map(String);
+      base.caseSensitive=!(o.caseSensitive===false||String(o.caseSensitive).toLowerCase()==='false');
       if(type==='proof'){
         if(!Array.isArray(o.words)||o.words.length<2)return bad.push('第'+n+'題:proof 需要 words 陣列');
         const e=Number(o.errorIndex);
         if(!Number.isInteger(e)||e<0||e>=o.words.length)return bad.push('第'+n+'題:errorIndex 不正確');
         base.words=o.words.map(String);base.errorIndex=e;
       }
-    }else{
-      let a=o.answer;
-      if(typeof a==='string'||typeof a==='number')a=[String(a)];
-      if(!Array.isArray(a)||!a.length||a.some(x=>!String(x).trim()))return bad.push('第'+n+'題:fill 需要 answer(文字或陣列)');
-      base.answer=a.map(String);
     }
     good.push(base);
   });
@@ -200,10 +211,10 @@ function begin(list){qs=list;idx=0;score=0;wrongs=[];show('quiz');load()}
 /* ---------- 出題 ---------- */
 function load(){
   const q=qs[idx];
-  selW=null;selO=null;locked=false;
+  selW=null;locked=false;
   $('prog').textContent='進度 '+(idx+1)+' / '+qs.length;
   $('sc').textContent='得分 '+score;
-  $('qtext').textContent=q.type==='proof'?'找出句子中的錯字,並揀出正確寫法:':q.q;
+  $('qtext').textContent=q.type==='proof'?'找出句子中的錯字,並打出正確寫法(注意大細楷):':q.q;
   $('tags').innerHTML='';
   [q.subject,q.topic].filter(Boolean).forEach(t=>{const s=document.createElement('span');s.className='tag';s.textContent=t;$('tags').appendChild(s)});
   $('exp').style.display='none';$('next').classList.add('hide');
@@ -211,6 +222,13 @@ function load(){
   if(q.type==='mcq')renderMcq(c,q);
   else if(q.type==='fill')renderFill(c,q);
   else renderProof(c,q);
+}
+
+function makeInput(ph){
+  const inp=document.createElement('input');
+  inp.type='text';inp.className='fin';inp.placeholder=ph;
+  inp.setAttribute('autocapitalize','off');inp.setAttribute('autocorrect','off');inp.setAttribute('spellcheck','false');
+  return inp;
 }
 
 function renderMcq(c,q){
@@ -230,15 +248,13 @@ function renderMcq(c,q){
 }
 
 function renderFill(c,q){
-  const inp=document.createElement('input');
-  inp.type='text';inp.id='fin';inp.placeholder='輸入答案';
-  inp.setAttribute('autocapitalize','off');inp.setAttribute('autocorrect','off');
+  const inp=makeInput('輸入答案');
   const b=document.createElement('button');b.className='green';b.textContent='提交';
   const go=()=>{
     if(locked)return;
     const v=inp.value;
     if(!v.trim())return;
-    const ok=q.answer.some(a=>norm(a)===norm(v));
+    const ok=matches(q,v);
     inp.disabled=true;b.disabled=true;
     inp.style.background=ok?'#d4edda':'#f8d7da';
     done(ok,v.trim());
@@ -260,38 +276,32 @@ function renderProof(c,q){
     };
     wd.appendChild(b);
   });
-  const s2=document.createElement('div');s2.className='step';s2.textContent='第 2 步:揀正確寫法';
-  const od=document.createElement('div');
-  q.options.forEach((o,i)=>{
-    const b=document.createElement('button');b.className='opt';b.textContent=L[i]+') '+o;
-    b.onclick=()=>{
-      if(locked)return;
-      selO=i;od.querySelectorAll('.opt').forEach((x,j)=>x.classList.toggle('sel',j===i));
-      upd();
-    };
-    od.appendChild(b);
-  });
+  const s2=document.createElement('div');s2.className='step';s2.textContent='第 2 步:打出這個字的正確寫法(大細楷要正確)';
+  const inp=makeInput('輸入正確寫法');
   const sub=document.createElement('button');sub.className='green';sub.textContent='提交';sub.disabled=true;
-  function upd(){sub.disabled=(selW===null||selO===null)}
-  sub.onclick=()=>{
-    if(locked||selW===null||selO===null)return;
-    const wOk=selW===q.errorIndex,oOk=selO===q.answer;
-    const ws=wd.querySelectorAll('.w'),os=od.querySelectorAll('.opt');
-    ws.forEach(x=>x.classList.remove('sel'));os.forEach(x=>x.classList.remove('sel'));
+  function upd(){sub.disabled=(selW===null||!inp.value.trim())}
+  inp.addEventListener('input',upd);
+  const go=()=>{
+    if(locked||selW===null||!inp.value.trim())return;
+    const v=inp.value.trim();
+    const wOk=selW===q.errorIndex,tOk=matches(q,v);
+    const ws=wd.querySelectorAll('.w');
+    ws.forEach(x=>x.classList.remove('sel'));
     ws[q.errorIndex].classList.add('correct');
     if(!wOk)ws[selW].classList.add('wrong');
-    os[q.answer].classList.add('correct');
-    if(!oOk)os[selO].classList.add('wrong');
-    sub.disabled=true;
-    done(wOk&&oOk,'錯字:'+q.words[selW]+';寫法:'+L[selO]+') '+q.options[selO]);
+    inp.disabled=true;sub.disabled=true;
+    inp.style.background=tOk?'#d4edda':'#f8d7da';
+    done(wOk&&tOk,'錯字:'+q.words[selW]+';寫法:'+v);
   };
-  c.appendChild(s1);c.appendChild(wd);c.appendChild(s2);c.appendChild(od);c.appendChild(sub);
+  sub.onclick=go;
+  inp.addEventListener('keydown',e=>{if(e.key==='Enter')go()});
+  c.appendChild(s1);c.appendChild(wd);c.appendChild(s2);c.appendChild(inp);c.appendChild(sub);
 }
 
 function ansText(q){
   if(q.type==='mcq')return L[q.answer]+') '+q.options[q.answer];
   if(q.type==='fill')return q.answer.join(' / ');
-  return '錯字:'+q.words[q.errorIndex]+';正確寫法:'+L[q.answer]+') '+q.options[q.answer];
+  return '錯字:'+q.words[q.errorIndex]+';正確寫法:'+q.answer.join(' / ');
 }
 
 function done(ok,given){
@@ -300,7 +310,11 @@ function done(ok,given){
   if(ok)score++;else wrongs.push({q,given});
   $('sc').textContent='得分 '+score;
   let t=(ok?'✅ 答對!\n':'❌ 答錯。正確答案:'+ansText(q)+'\n');
-  if(q.type==='proof')t+='正確句子:'+q.q.replace(q.words[q.errorIndex],q.options[q.answer])+'\n';
+  if(!ok&&q.type!=='mcq'&&q.caseSensitive&&given&&q.answer.some(a=>norm(a,false)===norm(given.replace(/^.*寫法:/,''),false)))t+='⚠️ 字母正確,但大細楷不正確。\n';
+  if(q.type==='proof'){
+    const fixed=q.words.map((w,i)=>i===q.errorIndex?q.answer[0]:w).join(' ');
+    t+='正確句子:'+fixed+'\n';
+  }
   t+='\n💡 解釋:\n'+(q.exp||'(沒有提供解釋)');
   $('exp').textContent=t;
   $('exp').style.display='block';
@@ -358,8 +372,9 @@ function retryWrong(){begin(wrongs.map(w=>w.q))}
 function fillSample(){
   $('src').value=JSON.stringify({title:'範例(三種題型)',questions:[
     {type:'mcq',subject:'常識',topic:'地理',q:'香港最高的山是哪一座?',options:['大帽山','太平山','獅子山','黃嶺'],answer:0,exp:'大帽山海拔約 957 米。',errorType:'記憶'},
-    {type:'fill',subject:'英文',topic:'Tenses',q:'She ___ to school every day.',answer:['goes'],exp:'主語 She 是第三人稱單數,用 goes。',errorType:'主謂一致'},
-    {type:'proof',subject:'English',topic:'Grammar',q:'She go to school every day.',words:['She','go','to','school','every','day.'],errorIndex:1,options:['goes','going','went','gone'],answer:0,exp:'主語 She 是第三人稱單數,動詞要加 es。',errorType:'主謂一致'}
+    {type:'fill',subject:'英文',topic:'Capital letters',q:'___ am a student.',answer:['I'],exp:'句首和代名詞 I 要用大楷。',errorType:'大細楷'},
+    {type:'proof',subject:'English',topic:'Tenses',q:'Yesterday she go to school by bus.',words:['Yesterday','she','go','to','school','by','bus.'],errorIndex:2,answer:['went'],exp:'Yesterday 表示過去,動詞要用過去式 went。',errorType:'時態錯誤'},
+    {type:'proof',subject:'English',topic:'Capital letters',q:'Tom and i play tennis.',words:['Tom','and','i','play','tennis.'],errorIndex:2,answer:['I'],exp:'人稱代名詞 I 永遠要用大楷。',errorType:'大細楷'}
   ]},null,1);
 }
 
